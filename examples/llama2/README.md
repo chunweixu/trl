@@ -2,6 +2,7 @@
 There were three main steps to the training process:
 1. Pretrain the base model to enhance chinese:
     - `python train_tokenizer.py --model_prefiex --input_file --output_sp_dir --output_hf_dir --llama_tokenizer_dir`
+    - `accelerate launch training/run_clm_pt_with_peft.py --output_dir="/root/autodl-tmp/tuning/pretrain" --dataset_name="/root/autodl-tmp/dialoguesum/test.csv" --model_name="/root/autodl-tmp/llama-7b"`
 
 2. Supervised fine-tuning of the base model to create dialogue_sft:
     - `torchrun --nnodes 1  --nproc_per_node 1 supervised_finetuning.py --model_path /root/autodl-tmp/chatglm2-6b --dataset_name /root/autodl-tmp/dialoguesum/test.csv --learning_rate 1e-5 --max_steps 5000 --output_dir /root/autodl-tmp/tuning/dialogue_sft`

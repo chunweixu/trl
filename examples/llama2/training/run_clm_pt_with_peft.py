@@ -7,7 +7,7 @@ import torch
 from datasets import load_dataset
 from peft import AutoPeftModelForCausalLM, LoraConfig
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, HfArgumentParser, TrainingArguments
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, HfArgumentParser, TrainingArguments, LlamaTokenizer
 
 from trl import SFTTrainer
 from trl.trainer import ConstantLengthDataset
@@ -19,6 +19,7 @@ class ScriptArguments:
     log_with: Optional[str] = field(default="wandb", metadata={"help": "use 'wandb' to log with wandb"})
 
     dataset_name: Optional[str] = field(default="lvwerra/stack-exchange-paired", metadata={"help": "the dataset name"})
+    num_workers: Optional[int] = field(default=6, metadata={"help": "the number processes"})
     subset: Optional[str] = field(default="data/finetune", metadata={"help": "the subset to use"})
     split: Optional[str] = field(default="train", metadata={"help": "the split to use"})
     size_valid_set: Optional[int] = field(default=4000, metadata={"help": "the size of the validation set"})
@@ -29,9 +30,9 @@ class ScriptArguments:
     max_steps: Optional[int] = field(default=500, metadata={"help": "the maximum number of sgd steps"})
     logging_steps: Optional[int] = field(default=10, metadata={"help": "the logging frequency"})
     save_steps: Optional[int] = field(default=10, metadata={"help": "the saving frequency"})
-    per_device_train_batch_size: Optional[int] = field(default=4, metadata={"help": "the per device train batch size"})
+    per_device_train_batch_size: Optional[int] = field(default=1, metadata={"help": "the per device train batch size"})
     per_device_eval_batch_size: Optional[int] = field(default=1, metadata={"help": "the per device eval batch size"})
-    gradient_accumulation_steps: Optional[int] = field(default=2, metadata={"help": "the gradient accumulation steps"})
+    gradient_accumulation_steps: Optional[int] = field(default=8, metadata={"help": "the gradient accumulation steps"})
     gradient_checkpointing: Optional[bool] = field(
         default=True, metadata={"help": "whether to use gradient checkpointing"}
     )
@@ -40,7 +41,7 @@ class ScriptArguments:
     lora_alpha: Optional[float] = field(default=16, metadata={"help": "the lora alpha parameter"})
     lora_dropout: Optional[float] = field(default=0.05, metadata={"help": "the lora dropout parameter"})
     lora_r: Optional[int] = field(default=8, metadata={"help": "the lora r parameter"})
-    flash_attn : Optional[bool] = field(default=False)
+    flash_attn : Optional[bool] = field(default=True)
 
     learning_rate: Optional[float] = field(default=1e-4, metadata={"help": "the learning rate"})
     lr_scheduler_type: Optional[str] = field(default="cosine", metadata={"help": "the lr scheduler type"})
@@ -89,29 +90,19 @@ def print_trainable_parameters(model):
 
 def prepare_sample_text(example):
     """Prepare the text from a sample of the dataset."""
-    text = f"Question: {example['question']}\n\nAnswer: {example['response_j']}"
+    text = f"Question: {example['dialogue']}\n\nAnswer: {example['summary']}"
     return text
 
 
 def create_datasets(tokenizer, args):
     dataset = load_dataset(
-        args.dataset_name,
-        data_dir=args.subset,
-        split=args.split,
-        use_auth_token=True,
-        num_proc=args.num_workers if not args.streaming else None,
-        streaming=args.streaming,
+        'csv',
+        data_files = args.dataset_name,
     )
-    if args.streaming:
-        print("Loading the dataset in streaming mode")
-        valid_data = dataset.take(args.size_valid_set)
-        train_data = dataset.skip(args.size_valid_set)
-        train_data = train_data.shuffle(buffer_size=args.shuffle_buffer, seed=None)
-    else:
-        dataset = dataset.train_test_split(test_size=0.005, seed=None)
-        train_data = dataset["train"]
-        valid_data = dataset["test"]
-        print(f"Size of the train set: {len(train_data)}. Size of the validation set: {len(valid_data)}")
+    dataset = dataset["train"].train_test_split(test_size=0.1, seed=None)
+    train_data = dataset["train"]
+    valid_data = dataset["test"]
+    print(f"Size of the train set: {len(train_data)}. Size of the validation set: {len(valid_data)}")
 
     chars_per_token = chars_token_ratio(train_data, tokenizer)
     print(f"The character to token ratio of the dataset is: {chars_per_token:.2f}")
@@ -159,7 +150,7 @@ peft_config = LoraConfig(
     task_type="CAUSAL_LM",
 )
 
-tokenizer = AutoTokenizer.from_pretrained(script_args.model_name, trust_remote_code=True)
+tokenizer = LlamaTokenizer.from_pretrained(script_args.model_name, trust_remote_code=True)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"  # Fix weird overflow issue with fp16 training
 
@@ -178,9 +169,9 @@ training_args = TrainingArguments(
     lr_scheduler_type=script_args.lr_scheduler_type,
     warmup_steps=script_args.num_warmup_steps,
     optim=script_args.optimizer_type,
-    bf16=True,
+    fp16=True,
     remove_unused_columns=False,
-    run_name="sft_llama2",
+    run_name="pretrain_llama2",
 )
 
 train_dataset, eval_dataset = create_datasets(tokenizer, script_args)
